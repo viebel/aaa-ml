@@ -1,0 +1,2 @@
+{:deps {honeysql  {:mvn/version "0.9.3"}
+        org.clojure/java.jdbc {:mvn/version "0.7.8"}}}

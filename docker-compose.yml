@@ -1,0 +1,22 @@
+# Use postgres/example user/password credentials
+version: '3.1'
+
+services:
+
+  db:
+    image: postgres
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: me
+      POSTGRES_USER: me
+      POSTGRES_DB: audyx
+    ports:
+     - 5433:5432
+    volumes:
+     - ./:/app
+
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - 8001:8080
