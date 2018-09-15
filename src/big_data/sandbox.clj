@@ -55,28 +55,14 @@
 
 (j/query db (sql/format tests-count-by-user))
 
-(defn patient-tests-query [patient-id]
-  {:select [:done_at :result :ears :equipped]
+(defn tonal-tests-query [patient-id]
+  {:select [:done_at [(sql/call :to_char :done_at "dd/mm/yyyy") "done_at_day"] :result :ears :equipped]
    :from   [:tests]
    :where  [:and [:= :type_id tonal-type-id] [:= :patient_id patient-id]]
    :order  [:done_at]})
 
-;(f/show-formatters)
-
-(defn display-date [ttt]
-  (f/unparse (f/formatter :date) (c/from-date ttt)))
-
-(defn patient-tests [patient-id]
-  (->> (j/query db (sql/format (patient-tests-query patient-id)))
-       (map
-         (fn [test]
-           (-> test
-               (dissoc :noah_settings)
-               (assoc :done_at_day (display-date (:done_at test))))))))
-
-
 (defn tonal-tests [patient-id]
-  (map #(dissoc % :noah_settings) (patient-tests patient-id)))
+  (j/query db (sql/format (tonal-tests-query patient-id))))
 
 (defn first-equipped-date [tests]
   (:done_at (first (filter :equipped tests))))
@@ -90,14 +76,12 @@
 (defn convert-result-in-test [test]
   (clojure.core/update test :result convert-result))
 
-
 (defn gain-and-loss [threshold-non-equipped threshold-equipped]
   (let [gain (- threshold-non-equipped threshold-equipped)
         target (* 0.5 threshold-non-equipped)]
     {:gain                 gain
      :loss                 threshold-non-equipped
      :distance-from-target (- target gain)}))
-
 
 (defn tests-after [date tests]
   (remove #(t/before? (c/from-date (:done_at %))
@@ -135,11 +119,10 @@
         m-s-e (months-since-equipped start-date)
         tests (tests-after start-date all-tests)
         tests-by-day (tests-by-day tests)]
-    (into {}
-      m-s-e
-      (map-object target-measure tests-by-day))))
+    (into []
+          m-s-e
+          (map-object target-measure tests-by-day))))
 
 
 
-(patient-history 3164)
-
+(patient-history 43510)
