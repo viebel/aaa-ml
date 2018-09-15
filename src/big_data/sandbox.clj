@@ -135,7 +135,7 @@
         m-s-e (months-since-equipped start-date)
         tests (tests-after start-date all-tests)
         tests-by-day (tests-by-day tests)]
-    (eduction
+    (into {}
       m-s-e
       (map-object target-measure tests-by-day))))
 
