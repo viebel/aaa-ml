@@ -25,6 +25,18 @@
 
 ;;; utils
 
+(defn hash->id [hash]
+  (->
+    (- hash 171)
+    (/ 317)))
+
+(defn id->hash [id]
+  (->
+    (* id 317)
+    (+ 171)))
+
+(hash->id 366623)
+(id->hash 43510)
 
 (defmacro dbg3 [x]
   (let [y (gensym "yyy")]
@@ -52,24 +64,24 @@
       (order-by [[:tests :desc]])
       (limit 10)))
 
-
 (j/query db (sql/format tests-count-by-user))
 
+(j/query db ["SELECT * from patients where id = 43510"])
+(j/query db ["SELECT * from centers where id = 7"])
 (defn tonal-tests-query [patient-id]
-  {:select [:done_at [(sql/call :to_char :done_at "dd/mm/yyyy") "done_at_day"] :result :ears :equipped]
+  {:select [:done_at [(sql/call :to_char :done_at "yyyy-mm-dd") "done_at_day"] :result :ears :equipped]
    :from   [:tests]
    :where  [:and [:= :type_id tonal-type-id] [:= :patient_id patient-id]]
-   :order  [:done_at]})
+   :order-by  [[:done_at :asc]]})
 
+(def patient-id 39577)
 (defn tonal-tests [patient-id]
   (j/query db (sql/format (tonal-tests-query patient-id))))
-
-(defn first-equipped-date [tests]
-  (:done_at (first (filter :equipped tests))))
 
 (defn convert-result [result]
   (->> (read-string result)
        vals
+       (remove #(or (nil? (:res %)) (nil? (:val %))))
        (map #(vec (gadjett/select-vals % [:val :res])))
        (into {})))
 
@@ -77,52 +89,90 @@
   (clojure.core/update test :result convert-result))
 
 (defn gain-and-loss [threshold-non-equipped threshold-equipped]
-  (let [gain (- threshold-non-equipped threshold-equipped)
-        target (* 0.5 threshold-non-equipped)]
-    {:gain                 gain
-     :loss                 threshold-non-equipped
-     :distance-from-target (- target gain)}))
+  (when-not (or (nil? threshold-non-equipped)
+          (nil? threshold-equipped))
+    (let [gain (- threshold-non-equipped threshold-equipped)
+          target (* 0.5 threshold-non-equipped)]
+      {:gain                 gain
+       :loss                 threshold-non-equipped
+       :distance-from-target (- target gain)})))
 
-(defn tests-after [date tests]
-  (remove #(t/before? (c/from-date (:done_at %))
-                      (c/from-date date))
+(defn target-measure [non-equipped equipped]
+  (for [freq (keys (:result equipped))]
+    [freq (gain-and-loss (get-in non-equipped [:result freq])
+                         (get-in equipped [:result freq]))]))
+
+
+(defn calc-gain-vs-target [audiogram equipped-start {:keys [done_at] :as equipped-test}]
+  [{:date                  done_at
+    :months-since-equipped (diff-in-months (c/from-date equipped-start)
+                                           (c/from-date done_at))}
+   (target-measure audiogram equipped-test)])
+
+(defn tests->gains [tests]
+  (reduce (fn [{:keys [last-audiogram equipped-start] :as history}
+               {:keys [equipped] :as test}]
+            (if-not equipped
+              (assoc history :last-audiogram (convert-result-in-test test))
+              (as-> history $
+                    (if (nil? equipped-start)
+                      (assoc $ :equipped-start (:done_at test))
+                      $)
+                    (clojure.core/update $
+                                         :gain-over-time
+                                         #(conj % (calc-gain-vs-target last-audiogram
+                                                                       (:equipped-start $)
+                                                                       (convert-result-in-test test)))))))
+          {:equipped-start nil
+           :last-audiogram nil
+           :gain-over-time []}
           tests))
 
-(defn months-since-equipped [start-date]
-  (map (fn [[k v]] [(assoc k :months-since-equipped (diff-in-months (c/from-date start-date)
-                                                                    (c/from-string (:done_at_day k)))) v])))
-(defn tests-by-day [tests]
-  (->> tests
-       (group-by #(select-keys % [:done_at_day :ears]))
-       (filter (fn [[_ the-tests]]
-                 (> (count (set (map :equipped the-tests))) 1)))
-       (into {})))
+(defn patient-gain-history [patient-id]
+  (->> (tonal-tests patient-id)
+       (group-by :ears)
+       (gadjett/map-object tests->gains)))
 
-(defn common-freqs [tests]
-  (sort (apply intersection (map #(set (keys (:result %))) tests))))
+(def data (patient-gain-history 39577))
+;; good patient
+;; 39577 -- droneau
 
-(defn target-measure [tests]
-  (let [tests (->> (group-by :equipped tests)
-                   (map-object last))
-        tests (map-object convert-result-in-test tests)
-        freqs (common-freqs (vals tests))
-        {equipped     true
-         non-equipped false} tests]
-    (for [freq freqs]
-      [freq (gain-and-loss (get-in non-equipped [:result freq])
-                           (get-in equipped [:result freq]))])))
+(defn data-to-plot [data freq]
+  (->> data
+       (map (fn [[k v]] [(:months-since-equipped k)
+                         (:distance-from-target (second (first (filter #(= freq (first %)) v))))]))))
+
+(data-to-plot (get-in data ["R" :gain-over-time]) 1000)
+
+(memoize)
+
+(defn transparent [arg]
+  [(type arg) (meta arg) (when (seq? arg) (seq arg)) arg])
 
 
-(defn patient-history [patient-id]
-  (let [all-tests (tonal-tests patient-id)
-        start-date (first-equipped-date all-tests)
-        m-s-e (months-since-equipped start-date)
-        tests (tests-after start-date all-tests)
-        tests-by-day (tests-by-day tests)]
-    (into []
-          m-s-e
-          (map-object target-measure tests-by-day))))
+(defn memoize-tr
+  "Returns a memoized version of a function (even if it is not referentially
+  transparent). The memoized version of the function keeps a cache of the
+  mapping from arguments to results and, when calls with the same arguments
+  are repeated often, has higher performance at the expense of higher memory use."
+  {:added "1.0"
+   :static true}
+  [f]
+  (let [mem (atom {})]
+    (fn [& args]
+      (let [ref-transparent-args (map transparent args)]
+        (if-let [e (find @mem ref-transparent-args)]
+          (val e)
+          (let [ret (apply f args)]
+            (swap! mem assoc ref-transparent-args ret)
+            ret))))))
 
+(def mem-conj (memoize conj))
 
+(= (mem-conj [1 2] 3) (conj [1 2] 3))                       ;; true
+(= (mem-conj '(1 2) 3) (conj '(1 2) 3))                     ;; false
 
-(patient-history 43510)
+(def mem-tr-conj (memoize-tr conj))
+
+(= (mem-tr-conj [1 2] 3) (conj [1 2] 3))                    ;;true
+(= (mem-tr-conj '(1 2) 3) (conj '(1 2) 3))                  ;; true
