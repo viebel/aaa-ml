@@ -8,24 +8,10 @@
 (ns gains
   (:require [gorilla-plot.core :as plot]
             [gadjett.collections :refer [map-object]]
-            [big-data.sandbox :refer [patient-gain-history]]))
+            [big-data.sandbox :refer [patient-gain-history patient-folder-url]]))
 ;; @@
 ;; =>
 ;;; {"type":"html","content":"<span class='clj-nil'>nil</span>","value":"nil"}
-;; <=
-
-;; @@
-
-;; @@
-;; =>
-;;; {"type":"list-like","open":"<span class='clj-lazy-seq'>(</span>","close":"<span class='clj-lazy-seq'>)</span>","separator":" ","items":[{"type":"html","content":"<span class='clj-long'>1000</span>","value":"1000"},{"type":"html","content":"<span class='clj-long'>1500</span>","value":"1500"},{"type":"html","content":"<span class='clj-long'>2000</span>","value":"2000"},{"type":"html","content":"<span class='clj-long'>3000</span>","value":"3000"},{"type":"html","content":"<span class='clj-long'>4000</span>","value":"4000"},{"type":"html","content":"<span class='clj-long'>750</span>","value":"750"},{"type":"html","content":"<span class='clj-long'>500</span>","value":"500"},{"type":"html","content":"<span class='clj-long'>250</span>","value":"250"}],"value":"(1000 1500 2000 3000 4000 750 500 250)"}
-;; <=
-
-;; @@
-
-;; @@
-;; =>
-;;; {"type":"html","content":"<span class='clj-var'>#&#x27;gains/my-data</span>","value":"#'gains/my-data"}
 ;; <=
 
 ;; @@
@@ -90,16 +76,10 @@
 ;; @@
 (def patient-id 39577)
 (def my-data (patient-gain-history patient-id))
+(symbol (patient-folder-url patient-id))
 ;; @@
 ;; =>
-;;; {"type":"html","content":"<span class='clj-var'>#&#x27;gains/high-freqs</span>","value":"#'gains/high-freqs"}
-;; <=
-
-;; @@
-(freqs (get-in my-data ["R" :gain-over-time]))
-;; @@
-;; =>
-;;; {"type":"list-like","open":"<span class='clj-lazy-seq'>(</span>","close":"<span class='clj-lazy-seq'>)</span>","separator":" ","items":[{"type":"html","content":"<span class='clj-long'>1000</span>","value":"1000"},{"type":"html","content":"<span class='clj-long'>1500</span>","value":"1500"},{"type":"html","content":"<span class='clj-long'>2000</span>","value":"2000"},{"type":"html","content":"<span class='clj-long'>3000</span>","value":"3000"},{"type":"html","content":"<span class='clj-long'>4000</span>","value":"4000"},{"type":"html","content":"<span class='clj-long'>750</span>","value":"750"},{"type":"html","content":"<span class='clj-long'>500</span>","value":"500"},{"type":"html","content":"<span class='clj-long'>250</span>","value":"250"}],"value":"(1000 1500 2000 3000 4000 750 500 250)"}
+;;; {"type":"html","content":"<span class='clj-symbol'>https://beta.audyx.com/#/patientFolder/12546080/patient</span>","value":"https://beta.audyx.com/#/patientFolder/12546080/patient"}
 ;; <=
 
 ;; **

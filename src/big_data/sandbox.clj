@@ -4,7 +4,7 @@
          '[honeysql.helpers :refer :all :as helpers])
 
 (require '[clojure.java.jdbc :as j])
-(require '[gadjett.collections :as gadjett :refer [map-object]])
+(require '[gadjett.collections :as gadjett :refer [map-object mean select-vals]])
 (require '[gadjett.core :refer [dbg]])
 
 (require '[clojure.pprint :refer [pprint]])
@@ -34,9 +34,11 @@
   (->
     (* id 317)
     (+ 171)))
+(defn patient-folder-url [id]
+  (str "https://beta.audyx.com/#/patientFolder/" (id->hash id) "/patient"))
 
 (hash->id 366623)
-(id->hash 43510)
+(id->hash 39577)
 
 (defmacro dbg3 [x]
   (let [y (gensym "yyy")]
@@ -64,10 +66,20 @@
       (order-by [[:tests :desc]])
       (limit 10)))
 
+(def all-audiograms-q
+  (-> (select :patient_id :done_at :result :ears :equipped)
+      (from :tests)
+      (where [:and [:= :equipped false] [:= :type_id tonal-type-id]])))
+
+(defn all-audiograms []
+  (j/query db (sql/format all-audiograms-q)))
+
+
 (j/query db (sql/format tests-count-by-user))
 
 (j/query db ["SELECT * from patients where id = 43510"])
 (j/query db ["SELECT * from centers where id = 7"])
+
 (defn tonal-tests-query [patient-id]
   {:select [:done_at [(sql/call :to_char :done_at "yyyy-mm-dd") "done_at_day"] :result :ears :equipped]
    :from   [:tests]
@@ -95,7 +107,7 @@
           target (* 0.5 threshold-non-equipped)]
       {:gain                 gain
        :loss                 threshold-non-equipped
-       :distance-from-target (- target gain)})))
+       :distance-from-target (- gain target)})))
 
 (defn target-measure [non-equipped equipped]
   (for [freq (keys (:result equipped))]
@@ -131,11 +143,13 @@
 (defn patient-gain-history [patient-id]
   (->> (tonal-tests patient-id)
        (group-by :ears)
-       (gadjett/map-object tests->gains)))
+       (map-object tests->gains)))
 
 (def data (patient-gain-history 39577))
 ;; good patient
 ;; 39577 -- droneau
+
+
 
 (defn data-to-plot [data freq]
   (->> data
@@ -144,35 +158,65 @@
 
 (data-to-plot (get-in data ["R" :gain-over-time]) 1000)
 
-(memoize)
-
-(defn transparent [arg]
-  [(type arg) (meta arg) (when (seq? arg) (seq arg)) arg])
 
 
-(defn memoize-tr
-  "Returns a memoized version of a function (even if it is not referentially
-  transparent). The memoized version of the function keeps a cache of the
-  mapping from arguments to results and, when calls with the same arguments
-  are repeated often, has higher performance at the expense of higher memory use."
-  {:added "1.0"
-   :static true}
-  [f]
-  (let [mem (atom {})]
-    (fn [& args]
-      (let [ref-transparent-args (map transparent args)]
-        (if-let [e (find @mem ref-transparent-args)]
-          (val e)
-          (let [ret (apply f args)]
-            (swap! mem assoc ref-transparent-args ret)
-            ret))))))
+(defn audio-mean [audiogram]
+  (let [vals (select-vals audiogram [500 1000 2000 4000])]
+    (if (= (count vals) 4)
+      (mean (select-vals audiogram [500 1000 2000 4000]))
+      nil)))
 
-(def mem-conj (memoize conj))
+(defn threshold->level [threshold]
+  (cond
+    (nil? threshold) nil
+    (<= threshold 20) "normal"
+    (<= 20 threshold 40) "light"
+    (<= 40 threshold 55) "mid"                              ;; "mid-1"
+    (<= 55 threshold 70) "mid"                              ;; "mid-2"
+    (<= 70 threshold 80) "severe"                           ;; "severe-1"
+    (<= 80 threshold 90) "severe"                           ;; "severe-2"
+    (>= threshold 90) "deep"
+    :else nil))
 
-(= (mem-conj [1 2] 3) (conj [1 2] 3))                       ;; true
-(= (mem-conj '(1 2) 3) (conj '(1 2) 3))                     ;; false
+(defn typology [audiogram]
+  {:average-loss (threshold->level (audio-mean audiogram))
+   :high-loss    (threshold->level (mean (->> audiogram
+                                              (filter (fn [[freq _]] (>= freq 1000)))
+                                              (map val))))
+   :low-loss     (threshold->level (mean (->> audiogram
+                                              (filter (fn [[freq _]] (<= freq 1000)))
+                                              (map val))))})
 
-(def mem-tr-conj (memoize-tr conj))
 
-(= (mem-tr-conj [1 2] 3) (conj [1 2] 3))                    ;;true
-(= (mem-tr-conj '(1 2) 3) (conj '(1 2) 3))                  ;; true
+(defn tests->typology [tonal-tests]
+  (->> tonal-tests
+       (group-by :ears)
+       (map-object #(->> %
+                         (sort-by :done_at)
+                         last
+                         convert-result-in-test
+                         :result
+                         typology))))
+
+(def ttt (all-audiograms))
+
+(defn audiograms->typologies [audiograms]
+  (as-> audiograms $
+        (group-by :patient_id $)
+        (map-object tests->typology $)))
+
+(defn distribution-of [typologies ear]
+  (->> (map #(get % ear) typologies)
+       (filter :average-loss)
+       frequencies
+       (sort-by val)))
+
+(defn typology-distribution [audiograms]
+  (let [typologies (vals (audiograms->typologies audiograms))]
+    {"L" (distribution-of typologies "L")
+     "R" (distribution-of typologies "R")}))
+
+(typology-distribution ttt)
+
+
+
