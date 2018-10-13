@@ -14,9 +14,3 @@ services:
      - 5433:5432
     volumes:
      - ./:/app
-
-  adminer:
-    image: adminer
-    restart: always
-    ports:
-      - 8001:8080

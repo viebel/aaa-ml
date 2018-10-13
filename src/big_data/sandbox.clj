@@ -1,29 +1,28 @@
-(ns big-data.sandbox)
-
-(require '[honeysql.core :as sql]
-         '[honeysql.helpers :refer :all :as helpers])
-
-(require '[clojure.java.jdbc :as j])
-(require '[gadjett.collections :as gadjett :refer [map-object mean select-vals]])
-(require '[gadjett.core :refer [dbg]])
-
-(require '[clojure.pprint :as pprint])
-(require '[clojure.pprint :refer [pprint]])
-(require '[clj-time.core :as t])
-(require '[clj-time.format :as f])
-(require '[clj-time.coerce :as c])
-
-(require '[clojure.set :refer [intersection]])
+(ns big-data.sandbox
+  (:refer-clojure :exclude [update])
+  (:require [honeysql.core :as sql]
+            [honeysql.helpers :refer :all :as helpers]
+            [clojure.java.jdbc :as j]
+            [gadjett.collections :as gadjett :refer [map-object mean select-vals mapify]]
+            [gadjett.core :refer [dbg]]
+            [clojure.pprint :as pprint]
+            [clojure.pprint :refer [pprint]]
+            [clj-time.core :as t]
+            [clj-time.format :as f]
+            [clj-time.coerce :as c]
+            [clojure.set :refer [intersection]]))
 
 
+(set! *print-length* 30)
 
 ;; Global settings
 
 ;;; db connection
 (def db {:dbtype "postgresql", :dbname "audyx_prod", :host "localhost", :port "5433", :user "me", :password "me"})
 
-(map :tablename (j/query db ["select tablename from pg_catalog.pg_tables"]))
+(sort (map :tablename (j/query db ["select tablename from pg_catalog.pg_tables"])))
 
+(declare typology)
 ;;; utils
 
 (defn hash->id [hash]
@@ -35,11 +34,13 @@
   (->
     (* id 317)
     (+ 171)))
+
 (defn patient-folder-url [id]
   (str "https://beta.audyx.com/#/patientFolder/" (id->hash id) "/patient"))
 
-(hash->id 366623)
-(id->hash 39577)
+(comment
+  (hash->id 366623)
+  (id->hash 39577))
 
 (defmacro dbg3 [x]
   (let [y (gensym "yyy")]
@@ -75,11 +76,44 @@
 (defn all-audiograms []
   (j/query db (sql/format all-audiograms-q)))
 
+(def all-tests-q
+  (-> (select :patient_id :done_at :result :ears :equipped)
+      (from :tests)
+      (order-by [[:done_at :asc]])
+      (where [:= :type_id tonal-type-id])))
 
-(j/query db (sql/format tests-count-by-user))
+(defn all-tests []
+  (j/query db (sql/format all-tests-q)))
 
-(j/query db ["SELECT * from patients where id = 43510"])
-(j/query db ["SELECT * from centers where id = 7"])
+(defn all-centers []
+  (->> (j/query db (sql/format
+                     (-> (select :id)
+                         (from :centers))))
+       (map :id)))
+
+(defn delete-table [t]
+  (j/execute! db (sql/format (delete-from t))))
+
+(comment
+  (count (all-centers)))
+
+
+
+(defn all-tests-of-center-q [center-id]
+  (-> (select :patient_id :center_id :done_at :result :ears :equipped)
+      (from :tests)
+      (join :patients [:= :tests.patient_id :patients.id])
+      (order-by [[:done_at :asc]])
+      (where [:and [:= :type_id tonal-type-id] [:= :center_id center-id]])))
+
+(defn all-tests-of-center [center-id]
+  (j/query db (sql/format (all-tests-of-center-q center-id))))
+
+(comment
+  (j/query db (sql/format tests-count-by-user))
+
+  (j/query db ["SELECT * from patients where id = 43510"])
+  (j/query db ["SELECT * from centers where id = 7"]))
 
 (defn tonal-tests-query [patient-id]
   {:select [:done_at [(sql/call :to_char :done_at "yyyy-mm-dd") "done_at_day"] :result :ears :equipped]
@@ -88,8 +122,33 @@
    :order-by  [[:done_at :asc]]})
 
 (def patient-id 39577)
+
 (defn tonal-tests [patient-id]
   (j/query db (sql/format (tonal-tests-query patient-id))))
+
+(defn patient-birthdates-q []
+  (-> (select :id :birthdate)
+      (from :patient_birthdates)))
+
+
+(defn patient-birthdates []
+  (->> (j/query db (sql/format (patient-birthdates-q)))
+       (mapify :id)
+       (map-object (fn [{:keys [birthdate]}]
+                     (when-not (= birthdate "")
+                       (f/parse (f/formatters :date) birthdate))))))
+
+
+(defn insert-equipment-success-q [data]
+  (-> (insert-into :equipment_success)
+      (values data)))
+
+(defn insert-equipment-success! [data]
+  (j/execute! db (sql/format (insert-equipment-success-q data))))
+
+(defn insert-equipment-success-in-parts! [data]
+  (doseq [p (partition 100 100 nil data)]
+    (println (insert-equipment-success! p))))
 
 (defn convert-result [result]
   (->> (read-string result)
@@ -108,7 +167,8 @@
           target (* 0.5 threshold-non-equipped)]
       {:gain                 gain
        :loss                 threshold-non-equipped
-       :distance-from-target (- gain target)})))
+       :distance-from-target (- gain target)
+       :success (>= (- gain target) -3) })))
 
 (defn target-measure [non-equipped equipped]
   (for [freq (keys (:result equipped))]
@@ -122,11 +182,27 @@
                                            (c/from-date done_at))}
    (target-measure audiogram equipped-test)])
 
+
+(defn equipped-audiogram->story
+  [audiogram equipped-start {:keys [done_at] :as equipped-test} birthdate]
+  {:date                            done_at
+   :age-in-months-at-equipped-start (when birthdate
+                                      (try (diff-in-months birthdate
+                                                           (c/from-date equipped-start))
+                                           (catch Exception _ nil)))
+   :months-since-equipped           (diff-in-months (c/from-date equipped-start)
+                                                    (c/from-date done_at))
+   :typology                        (typology (:result audiogram))
+   :non-equipped-audiogram          audiogram
+   :equipped-audiogram              equipped-test})
+
 (defn tests->gains [tests]
   (reduce (fn [{:keys [last-audiogram equipped-start] :as history}
                {:keys [equipped] :as test}]
             (if-not equipped
-              (assoc history :last-audiogram (convert-result-in-test test))
+              (let [audiogram (convert-result-in-test test)]
+                (assoc history :last-audiogram audiogram
+                               :last-typology (typology (:result audiogram))))
               (as-> history $
                     (if (nil? equipped-start)
                       (assoc $ :equipped-start (:done_at test))
@@ -141,15 +217,32 @@
            :gain-over-time []}
           tests))
 
+
+(defn tests->story [birthdates tests]
+  (:equipped-audiograms
+    (reduce (fn [{:keys [last-audiogram equipped-start] :as history}
+                 {:keys [equipped patient_id] :as test}]
+              (if-not equipped
+                (let [audiogram (convert-result-in-test test)]
+                  (assoc history :last-audiogram audiogram))
+                (as-> history $
+                      (if (nil? equipped-start)
+                        (assoc $ :equipped-start (:done_at test))
+                        (clojure.core/update $
+                                             :equipped-audiograms
+                                             #(conj % (equipped-audiogram->story last-audiogram
+                                                                                 (:equipped-start $)
+                                                                                 (convert-result-in-test test)
+                                                                                 (birthdates patient_id))))))))
+            {:equipped-start      nil
+             :last-audiogram      nil
+             :equipped-audiograms []}
+            tests)))
+
 (defn patient-gain-history [patient-id]
   (->> (tonal-tests patient-id)
        (group-by :ears)
        (map-object tests->gains)))
-
-(def data (patient-gain-history 39577))
-;; good patient
-;; 39577 -- droneau
-
 
 
 (defn data-to-plot [data freq]
@@ -157,14 +250,11 @@
        (map (fn [[k v]] [(:months-since-equipped k)
                          (:distance-from-target (second (first (filter #(= freq (first %)) v))))]))))
 
-(data-to-plot (get-in data ["R" :gain-over-time]) 1000)
-
-
 
 (defn audio-mean [audiogram]
   (let [vals (select-vals audiogram [500 1000 2000 4000])]
     (if (= (count vals) 4)
-      (mean (select-vals audiogram [500 1000 2000 4000]))
+      (float (mean (select-vals audiogram [500 1000 2000 4000])))
       nil)))
 
 (defn threshold->level [threshold]
@@ -179,15 +269,19 @@
     (>= threshold 90) "deep"
     :else nil))
 
-(defn typology [audiogram]
-  {:average-loss (threshold->level (audio-mean audiogram))
-   :high-loss    (threshold->level (mean (->> audiogram
-                                              (filter (fn [[freq _]] (>= freq 1000)))
-                                              (map val))))
-   :low-loss     (threshold->level (mean (->> audiogram
-                                              (filter (fn [[freq _]] (<= freq 1000)))
-                                              (map val))))})
 
+(defn audio-means [audiogram]
+  {:average-loss (audio-mean audiogram)
+   :high-loss    (float (mean (->> audiogram
+                                   (filter (fn [[freq _]] (>= freq 1000)))
+                                   (map val))))
+   :low-loss     (float (mean (->> audiogram
+                                   (filter (fn [[freq _]] (<= freq 1000)))
+                                   (map val))))})
+
+
+(defn typology [audiogram]
+  (map-object threshold->level (audio-means audiogram)))
 
 (defn tests->typology [tonal-tests]
   (->> tonal-tests
@@ -199,9 +293,14 @@
                          :result
                          typology))))
 
-(def ttt (all-audiograms))
+(comment
+  (def data (patient-gain-history 39577))
+  (data-to-plot (get-in data ["R" :gain-over-time]) 1000)
 
-(count ttt)
+  (def audiograms (all-audiograms))
+
+  (first audiograms)
+  (count (group-by :patient_id audiograms)))
 
 (defn audiograms->typologies [audiograms]
   (as-> audiograms $
@@ -219,66 +318,142 @@
   (let [typologies (vals (audiograms->typologies audiograms))]
     (distribution-of typologies "L")))
 
-(def dist (typology-distribution ttt))
-dist
 
-(def aaa '([{:average-loss "normal", :high-loss "mid", :low-loss "light"} 1]
-           [{:average-loss "severe", :high-loss "deep", :low-loss "normal"} 1]
-           [{:average-loss "light", :high-loss "light", :low-loss "severe"} 1]
-           [{:average-loss "light", :high-loss "severe", :low-loss "light"} 1]
-           [{:average-loss "mid", :high-loss "light", :low-loss "severe"} 2]
-           [{:average-loss "light", :high-loss "severe", :low-loss "normal"} 3]
-           [{:average-loss "severe", :high-loss "mid", :low-loss "deep"} 4]
-           [{:average-loss "mid", :high-loss "deep", :low-loss "mid"} 6]
-           [{:average-loss "mid", :high-loss "deep", :low-loss "normal"} 9]
-           [{:average-loss "light", :high-loss "normal", :low-loss "mid"} 15]
-           [{:average-loss "normal", :high-loss "mid", :low-loss "normal"} 15]
-           [{:average-loss "severe", :high-loss "deep", :low-loss "deep"} 35]
-           [{:average-loss "mid", :high-loss "deep", :low-loss "light"} 37]
-           [{:average-loss "light", :high-loss "normal", :low-loss "normal"} 38]
-           [{:average-loss "severe", :high-loss "severe", :low-loss "light"} 50]
-           [{:average-loss "deep", :high-loss "severe", :low-loss "severe"} 57]
-           [{:average-loss "severe", :high-loss "mid", :low-loss "mid"} 60]
-           [{:average-loss "normal", :high-loss "light", :low-loss "light"} 96]
-           [{:average-loss "mid", :high-loss "light", :low-loss "light"} 97]
-           [{:average-loss "mid", :high-loss "severe", :low-loss "severe"} 114]
-           [{:average-loss "severe", :high-loss "deep", :low-loss "light"} 120]
-           [{:average-loss "light", :high-loss "mid", :low-loss "mid"} 153]
-           [{:average-loss "severe", :high-loss "mid", :low-loss "severe"} 191]
-           [{:average-loss "deep", :high-loss "severe", :low-loss "deep"} 197]
-           [{:average-loss "light", :high-loss "normal", :low-loss "light"} 204]
-           [{:average-loss "deep", :high-loss "deep", :low-loss "mid"} 208]
-           [{:average-loss "mid", :high-loss "severe", :low-loss "normal"} 250]
-           [{:average-loss "severe", :high-loss "severe", :low-loss "deep"} 272]
-           [{:average-loss "normal", :high-loss "normal", :low-loss "light"} 319]
-           [{:average-loss "mid", :high-loss "mid", :low-loss "severe"} 347]
-           [{:average-loss "mid", :high-loss "light", :low-loss "mid"} 362]
-           [{:average-loss "light", :high-loss "light", :low-loss "mid"} 529]
-           [{:average-loss "severe", :high-loss "deep", :low-loss "mid"} 1226]
-           [{:average-loss "severe", :high-loss "deep", :low-loss "severe"} 1237]
-           [{:average-loss "mid", :high-loss "mid", :low-loss "normal"} 1629]
-           [{:average-loss "normal", :high-loss "light", :low-loss "normal"} 1765]
-           [{:average-loss "deep", :high-loss "deep", :low-loss "severe"} 2548]
-           [{:average-loss "mid", :high-loss "severe", :low-loss "light"} 3808]
-           [{:average-loss "light", :high-loss "light", :low-loss "normal"} 4351]
-           [{:average-loss "normal", :high-loss "normal", :low-loss "normal"} 4945]
-           [{:average-loss "severe", :high-loss "severe", :low-loss "mid"} 5189]
-           [{:average-loss "severe", :high-loss "severe", :low-loss "severe"} 5826]
-           [{:average-loss "light", :high-loss "light", :low-loss "light"} 6068]
-           [{:average-loss "light", :high-loss "mid", :low-loss "normal"} 6430]
-           [{:average-loss "mid", :high-loss "severe", :low-loss "mid"} 8700]
-           [{:average-loss "light", :high-loss "mid", :low-loss "light"} 9482]
-           [{:average-loss "deep", :high-loss "deep", :low-loss "deep"} 19346]
-           [{:average-loss "mid", :high-loss "mid", :low-loss "mid"} 24498]
-           [{:average-loss "mid", :high-loss "mid", :low-loss "light"} 28636]))
+(defn gain->stats [last-typology gain]
+  (let [[{:keys [months-since-equipped]} freqs] gain]
+    (for [[freq {:keys [success]}] freqs]
+      [last-typology freq months-since-equipped success])))
 
-(pprint/print-table (keys aaa))
-(select-vals [:average-loss :high-loss :low-loss] (get aaa "L"))
+(defn results->stats [{:keys [gain-over-time last-typology]}]
+  (->> gain-over-time
+       (mapcat (partial gain->stats last-typology))))
+
+(defn safe-inc [x]
+  (if (nil? x)
+    1
+    (inc x)))
+
+(defn success-by-months [ccc]
+        (->> ccc
+             (reduce (fn [res [freq months success?]]
+                       (update-in res [months success?] safe-inc))
+                     {})
+             (sort-by key)
+             (reduce (fn [[res total-true total-false] [months data]]
+                       (let [total-true (+ (get data true 0) total-true)
+                             total-false (+ (get data false 0) total-false)
+                             total (+ total-true total-false)]
+                         [(if (zero? total)
+                            res
+                            (-> res
+                                (assoc-in [months :total-true] total-true)
+                                (assoc-in [months :total-false] total-false)
+                                (assoc-in [months :total] total)
+                                (assoc-in [months :success-ratio] (float (/ total-true total)))))
+                          total-true
+                          total-false
+                          ]))
+                     [{} 0 0])
+             first
+             (sort-by key)))
+
+(defn success-by-typology [abc]
+  (as-> abc $
+        (group-by first $)
+        (map-object success-by-months $)))
+
 
 (defn dist->table [dist]
-  (with-out-str (let [total (dbg (apply + (map second dist)))]
+  (with-out-str (let [total (apply + (map second dist))]
                   (pprint/print-table (reverse (map (fn [[k v]] (assoc k :count v :ratio (format "%.2f" (* 100 (float (/ v total)))))) dist))))))
 
-(print (dist->table dist))
 
-(format "%.2f" 1.2392423423)
+
+(comment
+  (def tests (all-tests))
+
+  (count tests)
+  (def data-success-by-typology (time (as-> tests $
+                                            ;(take 10 $)
+                                            (group-by #(select-vals % [:ears :patient_id]) $)
+                                            (vals $)
+                                            (map tests->gains $)
+                                            (filter :equipped-start $)
+                                            (mapcat results->stats $)
+                                            (group-by first $)
+                                            (map-object #(map rest %) $)
+                                            (map-object success-by-typology $)
+                                            )))
+  (def dist (typology-distribution audiograms))
+  (print (dist->table dist))
+  )
+
+
+
+
+
+(defn flatten-test [{:keys [months-since-equipped age-in-months-at-equipped-start non-equipped-audiogram equipped-audiogram]}]
+  (let [{:keys [patient_id center_id ears]} equipped-audiogram
+        {:keys [result]} non-equipped-audiogram
+        {:keys [average-loss high-loss low-loss]} (audio-means result)
+        {eq-average-loss :average-loss
+         eq-high-loss :high-loss
+         eq-low-loss :low-loss} (audio-means (:result equipped-audiogram))]
+    {:patient_id   patient_id
+     :center_id    center_id
+     :ears ears
+     :age_in_months_at_equipped_start age-in-months-at-equipped-start
+     :months_since_equipped months-since-equipped
+     :average_loss average-loss
+     :high_loss    high-loss
+     :low_loss     low-loss
+     :eq_average_loss eq-average-loss
+     :eq_high_loss    eq-high-loss
+     :eq_low_loss     eq-low-loss}))
+
+
+(defn flatten-tests [tests]
+  (map flatten-test tests))
+
+(defn tests->stories [birthdates tests]
+  (as-> tests $
+        (group-by #(select-vals % [:ears :patient_id]) $)
+        (vals $)
+        (map (partial tests->story birthdates) $)
+        (remove empty? $)
+        (mapcat flatten-tests $)))
+
+(defmacro doseq-indexed [index-sym [item-sym coll] & body]
+  `(doseq [[~item-sym ~index-sym]
+           (map vector ~coll (range))]
+     ~@body))
+
+(comment
+
+  (def my-tests (all-tests-of-center 74))
+  (count my-tests)
+  (def birthdates (patient-birthdates))
+
+  (def my-stories (tests->stories birthdates my-tests))
+
+  my-stories
+  (count my-stories)
+
+  (insert-equipment-success-in-parts! my-stories)
+
+
+  (do
+    (delete-table :equipment_success)
+    (let [centers (take 5 (all-centers))
+          num-centers (count centers)
+          birthdates (patient-birthdates)]
+      (doseq-indexed i [center centers]
+                     (println "center #" i "/" num-centers "id:" center)
+                     (let [tests (all-tests-of-center center)
+                           stories (tests->stories birthdates tests)]
+                       (println "number of tests:" (count tests) "stories:" (count stories))
+                       (when-not (empty? stories)
+                         (insert-equipment-success-in-parts! stories))))))
+  )
+
+(partition 100 100 nil (range 3))
