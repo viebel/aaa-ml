@@ -444,7 +444,7 @@
 
   (do
     (delete-table :equipment_success)
-    (let [centers (take 5 (all-centers))
+    (let [centers (all-centers)
           num-centers (count centers)
           birthdates (patient-birthdates)]
       (doseq-indexed i [center centers]
@@ -455,5 +455,3 @@
                        (when-not (empty? stories)
                          (insert-equipment-success-in-parts! stories))))))
   )
-
-(partition 100 100 nil (range 3))

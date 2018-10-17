@@ -14,3 +14,11 @@ services:
      - 5433:5432
     volumes:
      - ./:/app
+  tf:
+    image: tensorflow/tensorflow:latest-py3
+    ports:
+      - 8888:8888
+    volumes:
+      - ./notebooks:/notebooks
+      - ./python-scripts:/python-scripts
+  
