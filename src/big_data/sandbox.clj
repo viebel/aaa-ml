@@ -22,6 +22,7 @@
 
 (sort (map :tablename (j/query db ["select tablename from pg_catalog.pg_tables"])))
 
+(j/query db ["select * from equipment_success limit 5"])
 (declare typology)
 ;;; utils
 
@@ -126,17 +127,18 @@
 (defn tonal-tests [patient-id]
   (j/query db (sql/format (tonal-tests-query patient-id))))
 
-(defn patient-birthdates-q []
-  (-> (select :id :birthdate)
-      (from :patient_birthdates)))
+(defn patient-details-q []
+  (-> (select :id :birthdate :gender)
+      (from :patient_details)))
 
 
-(defn patient-birthdates []
-  (->> (j/query db (sql/format (patient-birthdates-q)))
+(defn patient-details []
+  (->> (j/query db (sql/format (patient-details-q)))
        (mapify :id)
-       (map-object (fn [{:keys [birthdate]}]
-                     (when-not (= birthdate "")
-                       (f/parse (f/formatters :date) birthdate))))))
+       (map-object (fn [{:keys [birthdate] :as details}]
+                     (assoc details :birthdate
+                                    (when birthdate ""
+                                      (f/parse (f/formatters :date) birthdate)))))))
 
 
 (defn insert-equipment-success-q [data]
@@ -184,8 +186,9 @@
 
 
 (defn equipped-audiogram->story
-  [audiogram equipped-start {:keys [done_at] :as equipped-test} birthdate]
+  [audiogram equipped-start {:keys [done_at] :as equipped-test} {:keys [birthdate gender]}]
   {:date                            done_at
+   :gender gender
    :age-in-months-at-equipped-start (when birthdate
                                       (try (diff-in-months birthdate
                                                            (c/from-date equipped-start))
@@ -218,7 +221,7 @@
           tests))
 
 
-(defn tests->story [birthdates tests]
+(defn tests->story [details tests]
   (:equipped-audiograms
     (reduce (fn [{:keys [last-audiogram equipped-start] :as history}
                  {:keys [equipped patient_id] :as test}]
@@ -233,7 +236,7 @@
                                              #(conj % (equipped-audiogram->story last-audiogram
                                                                                  (:equipped-start $)
                                                                                  (convert-result-in-test test)
-                                                                                 (birthdates patient_id))))))))
+                                                                                 (get details patient_id))))))))
             {:equipped-start      nil
              :last-audiogram      nil
              :equipped-audiograms []}
@@ -392,7 +395,7 @@
 
 
 
-(defn flatten-test [{:keys [months-since-equipped age-in-months-at-equipped-start non-equipped-audiogram equipped-audiogram]}]
+(defn flatten-test [{:keys [months-since-equipped age-in-months-at-equipped-start gender non-equipped-audiogram equipped-audiogram]}]
   (let [{:keys [patient_id center_id ears]} equipped-audiogram
         {:keys [result]} non-equipped-audiogram
         {:keys [average-loss high-loss low-loss]} (audio-means result)
@@ -400,6 +403,7 @@
          eq-high-loss :high-loss
          eq-low-loss :low-loss} (audio-means (:result equipped-audiogram))]
     {:patient_id   patient_id
+     :gender gender
      :center_id    center_id
      :ears ears
      :age_in_months_at_equipped_start age-in-months-at-equipped-start
@@ -415,11 +419,11 @@
 (defn flatten-tests [tests]
   (map flatten-test tests))
 
-(defn tests->stories [birthdates tests]
+(defn tests->stories [details tests]
   (as-> tests $
         (group-by #(select-vals % [:ears :patient_id]) $)
         (vals $)
-        (map (partial tests->story birthdates) $)
+        (map (partial tests->story details) $)
         (remove empty? $)
         (mapcat flatten-tests $)))
 
@@ -432,23 +436,24 @@
 
   (def my-tests (all-tests-of-center 74))
   (count my-tests)
-  (def birthdates (patient-birthdates))
+  (def details (patient-details))
 
-  (def my-stories (tests->stories birthdates my-tests))
+  (def my-stories (tests->stories details my-tests))
 
-  my-stories
+  (take 10 my-stories)
   (count my-stories)
 
   (insert-equipment-success-in-parts! my-stories)
 
 
+  (delete-table :patient_details)
   (do
     (delete-table :equipment_success)
     (let [centers (all-centers)
           num-centers (count centers)
-          birthdates (patient-birthdates)]
+          birthdates (patient-details)]
       (doseq-indexed i [center centers]
-                     (println "center #" i "/" num-centers "id:" center)
+                     (println (str "center #" (inc i) "/" num-centers) "id:" center)
                      (let [tests (all-tests-of-center center)
                            stories (tests->stories birthdates tests)]
                        (println "number of tests:" (count tests) "stories:" (count stories))
