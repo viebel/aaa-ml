@@ -1,7 +1,9 @@
 # big-data
 Big Data
 
+# Upload to BigQuery
 
+bq load --replace --source_format=CSV --autodetect audiometry_tests.equipment_success ./notebooks/equipment_success.csv
 
 
 # setup local db
