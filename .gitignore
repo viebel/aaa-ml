@@ -1,3 +1,4 @@
 target/
 .gorilla-port
 .nrepl-port
+notebooks/.ipynb_checkpoints
