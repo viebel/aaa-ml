@@ -20,9 +20,7 @@
 ;;; db connection
 (def db {:dbtype "postgresql", :dbname "audyx_prod", :host "localhost", :port "5433", :user "me", :password "me"})
 
-(sort (map :tablename (j/query db ["select tablename from pg_catalog.pg_tables"])))
 
-(j/query db ["select * from equipment_success limit 5"])
 (declare typology)
 ;;; utils
 
@@ -274,7 +272,11 @@
 
 
 (defn audio-means [audiogram]
-  {:average-loss (audio-mean audiogram)
+  {:freq-500 (get audiogram 500)
+   :freq-1000 (get audiogram 1000)
+   :freq-2000 (get audiogram 2000)
+   :freq-4000 (get audiogram 4000)
+   :average-loss (audio-mean audiogram)
    :high-loss    (float (mean (->> audiogram
                                    (filter (fn [[freq _]] (>= freq 1000)))
                                    (map val))))
@@ -398,19 +400,32 @@
 (defn flatten-test [{:keys [months-since-equipped age-in-months-at-equipped-start gender non-equipped-audiogram equipped-audiogram]}]
   (let [{:keys [patient_id center_id ears]} equipped-audiogram
         {:keys [result]} non-equipped-audiogram
-        {:keys [average-loss high-loss low-loss]} (audio-means result)
+        {:keys [average-loss high-loss low-loss freq-500 freq-1000 freq-2000 freq-4000]} (audio-means result)
         {eq-average-loss :average-loss
          eq-high-loss :high-loss
-         eq-low-loss :low-loss} (audio-means (:result equipped-audiogram))]
+         eq-low-loss :low-loss
+         eq-freq-500 :freq-500
+         eq-freq-1000 :freq-1000
+         eq-freq-2000 :freq-2000
+         eq-freq-4000 :freq-4000
+         } (audio-means (:result equipped-audiogram))]
     {:patient_id   patient_id
      :gender gender
      :center_id    center_id
      :ears ears
      :age_in_months_at_equipped_start age-in-months-at-equipped-start
      :months_since_equipped months-since-equipped
+     :freq_500 freq-500
+     :freq_1000 freq-1000
+     :freq_2000 freq-2000
+     :freq_4000 freq-4000
      :average_loss average-loss
      :high_loss    high-loss
      :low_loss     low-loss
+     :eq_freq_500 eq-freq-500
+     :eq_freq_1000 eq-freq-1000
+     :eq_freq_2000 eq-freq-2000
+     :eq_freq_4000 eq-freq-4000
      :eq_average_loss eq-average-loss
      :eq_high_loss    eq-high-loss
      :eq_low_loss     eq-low-loss}))
@@ -432,9 +447,13 @@
            (map vector ~coll (range))]
      ~@body))
 
+(defn create-equipment-success-unique []
+  (j/execute! db ["DROP TABLE equipment_success_unique"])
+  (j/execute! db ["select * into equipment_success_unique from (\nwith summary as (\nselect *, row_number() over (partition by p.patient_id, p.ears\n                               order   by months_since_equipped desc) as rk\n  from equipment_success p)\nselect t.*\nfrom summary t\nwhere t.rk = 1) l "]))
+
 (comment
 
-  (def my-tests (all-tests-of-center 74))
+  (def my-tests (all-tests-of-center 667))
   (count my-tests)
   (def details (patient-details))
 
@@ -449,7 +468,7 @@
   (delete-table :patient_details)
   (do
     (delete-table :equipment_success)
-    (let [centers (all-centers)
+    (let [centers (all-centers) #_[667]
           num-centers (count centers)
           birthdates (patient-details)]
       (doseq-indexed i [center centers]
@@ -459,4 +478,5 @@
                        (println "number of tests:" (count tests) "stories:" (count stories))
                        (when-not (empty? stories)
                          (insert-equipment-success-in-parts! stories))))))
+  (create-equipment-success-unique)
   )
