@@ -272,10 +272,16 @@
 
 
 (defn audio-means [audiogram]
-  {:freq-500 (get audiogram 500)
+  {:freq-250 (get audiogram 250)
+   :freq-500 (get audiogram 500)
+   :freq-750 (get audiogram 750)
    :freq-1000 (get audiogram 1000)
+   :freq-1500 (get audiogram 1500)
    :freq-2000 (get audiogram 2000)
+   :freq-3000 (get audiogram 3000)
    :freq-4000 (get audiogram 4000)
+   :freq-6000 (get audiogram 6000)
+   :freq-8000 (get audiogram 8000)
    :average-loss (audio-mean audiogram)
    :high-loss    (float (mean (->> audiogram
                                    (filter (fn [[freq _]] (>= freq 1000)))
@@ -400,7 +406,7 @@
 (defn flatten-test [{:keys [months-since-equipped age-in-months-at-equipped-start gender non-equipped-audiogram equipped-audiogram]}]
   (let [{:keys [patient_id center_id ears]} equipped-audiogram
         {:keys [result]} non-equipped-audiogram
-        {:keys [average-loss high-loss low-loss freq-500 freq-1000 freq-2000 freq-4000]} (audio-means result)
+        {:keys [average-loss high-loss low-loss freq-250 freq-500 freq-750 freq-1000 freq-1500 freq-2000 freq-3000 freq-4000 freq-6000 freq-8000]} (audio-means result)
         {eq-average-loss :average-loss
          eq-high-loss :high-loss
          eq-low-loss :low-loss
@@ -415,10 +421,16 @@
      :ears ears
      :age_in_months_at_equipped_start age-in-months-at-equipped-start
      :months_since_equipped months-since-equipped
+     :freq_250 freq-250
      :freq_500 freq-500
+     :freq_750 freq-750
      :freq_1000 freq-1000
+     :freq_1500 freq-1500
      :freq_2000 freq-2000
+     :freq_3000 freq-3000
      :freq_4000 freq-4000
+     :freq_6000 freq-6000
+     :freq_8000 freq-8000
      :average_loss average-loss
      :high_loss    high-loss
      :low_loss     low-loss
@@ -455,6 +467,11 @@
 
   (def my-tests (all-tests-of-center 667))
   (count my-tests)
+  (sort-by second (frequencies (mapcat #(map :val (-> %
+                                               :result
+                                               read-string
+                                               vals))
+                                my-tests)))
   (def details (patient-details))
 
   (def my-stories (tests->stories details my-tests))
